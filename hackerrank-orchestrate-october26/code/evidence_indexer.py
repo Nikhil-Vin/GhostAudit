@@ -7,21 +7,28 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 from identity_resolver import parse_ts
 
 KV = re.compile(r'(\w+)=("[^"]*"|\S+)')
+BRACKET_EVENT = re.compile(r"\[[A-Z]+\]\s+\[(\w+)\](?:\s+\[[^\]]*\])*\s+(\w+):")
+DOC_RESOURCE = re.compile(r"\b(?:account|search|analytics|support|audit_record|backup|data_flow|export|tombstone)_\d+\b")
+TRACE = re.compile(r"\b(?:tr|rb)-[A-Za-z0-9-]+")
+TRACE_SKIP_KEYS = {"level", "severity", "instance", "pod", "region", "duration_ms", "attempt", "latency_ms",
+                   "took_ms", "shard", "trace_id", "requestId", "event", "service", "logger", "function",
+                   "seq", "rows", "http_status"}
 
 
 def _tbl_service(name: str):
     n = name.lower()
     if "tombstone" in n:
         return "identity_service"
+    if "analytics" in n:
+        return "analytics_platform"
     if "profile" in n or "account" in n:
         return "account_service"
     if "search" in n:
         return "search_service"
-    if "analytics" in n:
-        return "analytics_platform"
     if "support" in n:
         return "support_platform"
     if "backup" in n:
@@ -78,14 +85,17 @@ class EvidenceIndexer:
                     facts = self._sql(p, m)
                 elif ext == ".txt":
                     facts = self._txt(p, m)
+                elif ext == ".pdf":
+                    facts = self._pdf(p, m)
             except Exception as e:
                 print(f"[indexer] {p.name}: {e}")
 
         self._cache[fid] = facts
         return facts
 
-    def _mk(self, m: dict, service: str | None, event: str | None, rid: str | None, attrs: dict, raw: str):
+    def _mk(self, m: dict, service: str | None, event: str | None, rid: str | None, attrs: dict, raw: str, ts=None):
         return {
+            "ts": ts,
             "file_id": m["file_id"],
             "captured_at": m["_ts"],
             "service": service,
@@ -96,50 +106,94 @@ class EvidenceIndexer:
             "file": m["file_path"],
         }
 
+    def _parse_log_line(self, line: str) -> dict:
+        """Normalizes one log line from any supported dialect into a flat key/value dict.
+
+        Dialects: key=value, bracketed ([LEVEL] [service] [trace] event: k="v"), pipe-delimited,
+        RFC5424-style syslog, JSON lines, and key=value wrappers whose message="..." field nests
+        escaped key="value" pairs.
+        """
+        s = line.strip()
+        kv = {}
+        brace = s.find("{")
+        if brace != -1 and s.endswith("}"):
+            try:
+                obj = json.loads(s[brace:])
+                if isinstance(obj, dict):
+                    kv = {str(k): ("null" if v is None else str(v)) for k, v in obj.items()}
+                    if "severity" in kv and "level" not in kv:
+                        kv["level"] = kv["severity"]
+            except Exception:
+                kv = {}
+        if not kv:
+            text = s.replace('\\"', '"')
+            for k, v in KV.findall(text):
+                if k == "message" and v.startswith('"'):
+                    continue
+                kv.setdefault(k, v.strip('"'))
+            if "event" not in kv:
+                if " | " in s:
+                    parts = [x.strip() for x in s.split(" | ")]
+                    if len(parts) >= 5:
+                        kv["event"] = parts[4]
+                        kv.setdefault("service", parts[2])
+                        kv.setdefault("trace_id", parts[3])
+                else:
+                    mb = BRACKET_EVENT.search(s)
+                    if mb:
+                        kv["event"] = mb.group(2)
+                        kv.setdefault("service", mb.group(1))
+        if "trace_id" not in kv:
+            if kv.get("requestId"):
+                kv["trace_id"] = kv["requestId"]
+            else:
+                mt = TRACE.search(s)
+                if mt:
+                    kv["trace_id"] = mt.group(0)
+        if "service" not in kv:
+            kv["service"] = kv.get("logger") or kv.get("function") or kv.get("system")
+        return kv
+
     def _log(self, p: Path, m: dict):
-        lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
         parsed_lines = []
-        trace_to_ids = {}
+        trace_to_vals = {}
 
-        # Pass 1: parse each line and build trace_id correlation map
-        for line in lines:
-            s = line.strip()
-            kv = {}
-            if "{" in s and s.endswith("}"):
-                json_part = s[s.find("{") :]
-                try:
-                    kv = json.loads(json_part)
-                except Exception:
-                    kv = {}
-            if not kv:
-                kv = {k: v.strip('"') for k, v in KV.findall(line)}
-
+        # Pass 1: parse every line; collect all attribute values per trace so identifiers that
+        # only appear on the *_started line also describe the matching *_completed line.
+        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+            kv = self._parse_log_line(line)
             tid = kv.get("trace_id")
             if tid:
-                for id_key in ("lookup_key", "subject_ref", "subject_key", "match_key", "correlation_key", "email", "customer_reference"):
-                    v = kv.get(id_key)
-                    if v and str(v).lower() != "null":
-                        trace_to_ids.setdefault(tid, set()).add(str(v).lower())
-
+                for k, v in kv.items():
+                    if k in TRACE_SKIP_KEYS or v is None:
+                        continue
+                    sv = str(v)
+                    if sv.lower() in ("null", "none", ""):
+                        continue
+                    trace_to_vals.setdefault(tid, set()).add(sv.lower())
             parsed_lines.append((line, kv))
 
-        # Pass 2: generate facts, injecting correlated trace identifiers
+        # Pass 2: emit facts, appending correlated identifiers from the same trace
         out = []
         for line, kv in parsed_lines:
             ev = kv.get("event", "")
             rid = kv.get("resource_id")
-            svc = kv.get("service") or kv.get("logger")
+            svc = kv.get("service")
             tid = kv.get("trace_id")
-
-            raw_str = line.lower()
-            if tid and tid in trace_to_ids:
-                raw_str += " " + " ".join(trace_to_ids[tid])
-
+            raw_str = line.lower().replace('\\"', '"')
+            if tid and tid in trace_to_vals:
+                raw_str += " " + " ".join(trace_to_vals[tid])
+            ts = None
+            head = line.strip().split(" ", 1)[0]
+            if head[:4].isdigit() and "T" in head:
+                try:
+                    ts = parse_ts(head)
+                except ValueError:
+                    ts = None
             if rid:
-                out.append(self._mk(m, svc, ev, rid, kv, raw_str))
+                out.append(self._mk(m, svc, ev, rid, kv, raw_str, ts))
             elif kv:
-                out.append(self._mk(m, svc, ev, None, kv, raw_str))
-
+                out.append(self._mk(m, svc, ev, None, kv, raw_str, ts))
         return out
 
     def _txt(self, p: Path, m: dict):
@@ -161,6 +215,28 @@ class EvidenceIndexer:
         if not out:
             raw = p.read_text(encoding="utf-8", errors="ignore")
             out.append(self._mk(m, None, "txt", None, {}, raw))
+        return out
+
+    def _pdf(self, p: Path, m: dict):
+        """Extracts text from a PDF and emits one fact per resource_id it names.
+
+        The whole document text is kept as the fact's searchable text, so a resource mentioned in
+        the document is linked to a user through any identifier (email, user_id) printed beside it.
+        """
+        try:
+            text = subprocess.run(["pdftotext", "-layout", str(p), "-"], capture_output=True, text=True,
+                                  timeout=60, check=True).stdout
+        except (OSError, subprocess.SubprocessError):
+            try:
+                from pypdf import PdfReader
+
+                text = "\n".join((pg.extract_text() or "") for pg in PdfReader(str(p)).pages)
+            except Exception:
+                return []
+        flat = " ".join(text.split())
+        out = []
+        for rid in sorted(set(DOC_RESOURCE.findall(flat))):
+            out.append(self._mk(m, None, "pdf_document", rid, {"document": p.name}, flat))
         return out
 
     def _json(self, p: Path, m: dict):

@@ -1,53 +1,79 @@
 # Evaluation Report — Ghost Data Still Exists
 
-## 1. Executive Summary
-Evaluated **32** sample cases against the golden benchmark `dataset/sample_output.csv`.
+All numbers below are produced by `python3 code/evaluation/main.py` (no hand-entered results).
 
-## 2. Quantitative Accuracy Metrics
+## 1. Public sample benchmark (32 cases vs `dataset/sample_output.csv`)
 
-| Metric | Score | Percentage | Description |
-|---|---|---|---|
-| **Case-level Status Accuracy** | 24/32 (75.0%) | 75.0% | Correctly identified COMPLETE vs INCOMPLETE vs NOT_APPLICABLE |
-| **Step Count Accuracy** | 12/32 (37.5%) | 37.5% | Correct total steps emitted in `steps_json` |
-| **Step Key Set Match** | 9/32 (28.1%) | 28.1% | Discovered exact set of system/resource violations |
-| **Operation Sequence Accuracy** | 9/32 (28.1%) | 28.1% | Strict ordering across FINDING -> REMEDIATION -> VERIFICATION |
-| **Sort Order Accuracy** | 9/32 (28.1%) | 28.1% | 4-key sort (phase -> op -> system -> resource) |
-| **Evidence Citation Accuracy** | 9/32 (28.1%) | 28.1% | Proper citing of evidence IDs vs empty string on future actions |
-| **Exact `steps_json` Match** | 9/32 (28.1%) | 28.1% | Bit-for-bit identical step array match |
+| Metric | Result |
+|---|---|
+| Case-level deletion-status accuracy | 32/32 (100.0%) |
+| Step-level precision (distinct phase/operation/system/resource keys) | 180/180 (100.0%) |
+| Step-level recall | 180/193 (93.3%) |
+| Cases with exactly the right step set | 21/32 (65.6%) |
+| Sequence accuracy: ordered key list identical | 21/32 (65.6%) |
+| Sequence accuracy: LCS ratio over ordered keys | 180/193 (93.3%) |
+| Cases whose whole row matches exactly (status + all step fields) | 20/32 (62.5%) |
 
-## 3. Discovered Edge Cases & Failures Fixed
-1. **Decoy Isolation via Word Boundaries**: Prevented substring matches (e.g. `user_1` matching `user_10`, `user_11`) by enforcing regex word boundaries.
-2. **Replica Drift Detection in SQLite Snapshots**: Resolved unparsed `record_json` and `origin_system` in replica tables (`customer_data_read_replica`), catching lingering replica records.
-3. **Terminal Log State Extraction**: Filtered out in-flight `_started` log entries, preventing 404 completed lookups from being erroneously classified as present.
+Field-level accuracy over steps whose key was found in the gold row:
 
-## 4. Additional Handcrafted Evaluation Cases
-Our team verified three edge cases beyond the public dataset:
-- **Case E-01 (Multi-regional Replication Drift)**: Account deleted in primary and 2 read replicas, but persistent in a failover replica. Successfully reported `REPORT_REMAINING_RECORD` citing the failover snapshot.
-- **Case E-02 (Tombstone PII Redaction)**: Tombstone preserved with valid stable `user_id` but unredacted phone number. Successfully flagged `REPORT_EXPOSED_PII` on `identity_service` with `REDACT_RECORD` remediation.
-- **Case E-03 (Active ETL Re-ingestion Risk)**: Profile deleted from database but connector configuration set to `enabled: true`. Correctly reported `REPORT_ACTIVE_DATA_FLOW` with `DISABLE_DATA_FLOW`.
+| Field | Correct |
+|---|---|
+| `step_no` | 160/180 (88.9%) |
+| `phase` | 180/180 (100.0%) |
+| `system_id` | 180/180 (100.0%) |
+| `resource_id` | 180/180 (100.0%) |
+| `operation` | 180/180 (100.0%) |
+| `state` | 180/180 (100.0%) |
+| `evidence_id` | 179/180 (99.4%) |
 
-## 5. Detailed Mismatches (if any)
+## 2. Additional participant-written cases (executed)
 
-- **case_03**: gold=COMPLETE, pred=COMPLETE | steps gold=3 vs pred=2 | missing=[('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_9406')] | extra=[]
-- **case_04**: gold=COMPLETE, pred=COMPLETE | steps gold=2 vs pred=1 | missing=[('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_901')] | extra=[]
-- **case_07**: gold=INCOMPLETE, pred=COMPLETE | steps gold=4 vs pred=1 | missing=[('FINDING', 'REPORT_REMAINING_RECORD', 'support_platform', 'support_001'), ('REMEDIATION', 'DELETE_RECORD', 'support_platform', 'support_001')] | extra=[]
-- **case_09**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=5 vs pred=3 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_3960'), ('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_4902')] | extra=[]
-- **case_10**: gold=INCOMPLETE, pred=COMPLETE | steps gold=4 vs pred=1 | missing=[('FINDING', 'REPORT_REMAINING_RECORD', 'support_platform', 'support_002'), ('REMEDIATION', 'DELETE_RECORD', 'support_platform', 'support_002')] | extra=[]
-- **case_12**: gold=INCOMPLETE, pred=COMPLETE | steps gold=5 vs pred=2 | missing=[('FINDING', 'REPORT_REMAINING_RECORD', 'analytics_platform', 'analytics_9914'), ('REMEDIATION', 'DELETE_RECORD', 'analytics_platform', 'analytics_9914')] | extra=[]
-- **case_15**: gold=INCOMPLETE, pred=COMPLETE | steps gold=5 vs pred=2 | missing=[('FINDING', 'REPORT_ACTIVE_DATA_FLOW', 'integration_service', 'data_flow_9846'), ('REMEDIATION', 'DISABLE_DATA_FLOW', 'integration_service', 'data_flow_9846')] | extra=[]
-- **case_17**: gold=INCOMPLETE, pred=COMPLETE | steps gold=5 vs pred=3 | missing=[('FINDING', 'REPORT_RESTORE_RISK', 'backup_service', 'backup_3245'), ('REMEDIATION', 'BLOCK_RESTORE', 'backup_service', 'backup_3245')] | extra=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_6523')]
-- **case_18**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=14 vs pred=12 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_5521'), ('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_6645')] | extra=[]
-- **case_19**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=8 vs pred=5 | missing=[('FINDING', 'REPORT_EXPOSED_PII', 'support_platform', 'support_9553'), ('REMEDIATION', 'REDACT_RECORD', 'support_platform', 'support_9553')] | extra=[]
-- **case_20**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=8 vs pred=6 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_5037'), ('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_5569')] | extra=[]
-- **case_21**: gold=COMPLETE, pred=COMPLETE | steps gold=3 vs pred=1 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_6440'), ('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_5335')] | extra=[]
-- **case_22**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=8 vs pred=7 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_4990')] | extra=[]
-- **case_23**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=8 vs pred=6 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_410'), ('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_4128')] | extra=[]
-- **case_24**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=7 vs pred=6 | missing=[('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_7095')] | extra=[]
-- **case_25**: gold=COMPLETE, pred=COMPLETE | steps gold=3 vs pred=1 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_3136'), ('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_1895')] | extra=[]
-- **case_26**: gold=COMPLETE, pred=INCOMPLETE | steps gold=6 vs pred=6 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_5684'), ('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_4566')] | extra=[('FINDING', 'REPORT_EXPOSED_PII', 'support_platform', 'support_4715'), ('REMEDIATION', 'REDACT_RECORD', 'support_platform', 'support_4715')]
-- **case_27**: gold=COMPLETE, pred=INCOMPLETE | steps gold=6 vs pred=6 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_3866'), ('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_4574')] | extra=[('FINDING', 'REPORT_EXPOSED_PII', 'support_platform', 'support_4707'), ('REMEDIATION', 'REDACT_RECORD', 'support_platform', 'support_4707')]
-- **case_28**: gold=COMPLETE, pred=INCOMPLETE | steps gold=6 vs pred=6 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_5482'), ('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_6077')] | extra=[('FINDING', 'REPORT_EXPOSED_PII', 'support_platform', 'support_2351'), ('REMEDIATION', 'REDACT_RECORD', 'support_platform', 'support_2351')]
-- **case_29**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=14 vs pred=12 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_7012'), ('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_3954')] | extra=[]
-- **case_30**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=14 vs pred=12 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_4163'), ('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_1707')] | extra=[]
-- **case_31**: gold=COMPLETE, pred=COMPLETE | steps gold=3 vs pred=2 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_4857')] | extra=[]
-- **case_32**: gold=INCOMPLETE, pred=INCOMPLETE | steps gold=5 vs pred=4 | missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_8858')] | extra=[]
+Each case builds a small synthetic dataset (fictional person `user_900`, same file formats as `dataset/`) and asserts status, ordered steps and, where noted, evidence ids.
+
+| Case | Scenario | Result | Status | Steps |
+|---|---|---|---|---|
+| C1 leftover search entry | Account deleted but a search-index document still holds the email. | PASS | INCOMPLETE | 4 |
+| C2 recreation risks | Enabled connector and restorable backup must be disabled/blocked and re-verified. | PASS | INCOMPLETE | 7 |
+| C3 clean deletion | Everything already absent: COMPLETE, verification steps only. | PASS | COMPLETE | 2 |
+| C4 evidence after audit_at | A later snapshot showing leftovers is ignored. | PASS | COMPLETE | 2 |
+| C5.0 non-deletion request | Could you send me a copy of the information held on my accou | PASS | NOT_APPLICABLE | 0 |
+| C5.1 non-deletion request | Please change the email address used for this account. I wan | PASS | NOT_APPLICABLE | 0 |
+| C5.2 non-deletion request | Please remove me from marketing lists only. I still want ser | PASS | NOT_APPLICABLE | 0 |
+| C6.0 multilingual deletion | Je demande la suppression définitive du compte associé à cet | PASS | INCOMPLETE | 4 |
+| C6.1 multilingual deletion | Solicito a exclusão permanente da conta associada a este e-m | PASS | INCOMPLETE | 4 |
+| C6.2 multilingual deletion | Por favor, borren mi cuenta y mis datos personales. | PASS | INCOMPLETE | 4 |
+
+10/10 custom assertions passed.
+
+## 3. Full dataset run (`output.csv`)
+
+518 rows; status counts {'COMPLETE': 162, 'INCOMPLETE': 346, 'NOT_APPLICABLE': 10}; 2999 steps in total. There is no gold for these cases, so this is a structural summary, not an accuracy figure.
+
+## 4. Failures found and improvements made
+
+- Request-intent: the first classifier let boilerplate such as "handle any copies" or Portuguese "cópia" outweigh an explicit deletion cue, and ignored preservation phrases ("I am not asking for deletion", "leave the account active"). Preservation cues are now checked first, then explicit delete cues, then non-delete topics; all 10 non-deletion requests in the evaluation file are detected.
+- Log dialects (key=value, JSON lines, bracketed, pipe, syslog) are normalized and correlated by trace id, because the identifier often appears only on the `*_started` line while the resource id is on the `*_completed` line.
+- State is judged only from read-backs between `requested_at` and `audit_at`; stale pre-request lookups and post-`audit_at` files no longer create findings or citations.
+- Verification of a linked account and of retained audit records is emitted even when no read-back names them.
+- PDF evidence is parsed with `pdftotext`; screenshots (images) are not OCR-parsed.
+
+## 5. Remaining mismatches on the public sample
+
+- `case_03`: gold=COMPLETE pred=COMPLETE; steps gold=3 pred=2; missing=[('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_9406')]; extra=[]
+- `case_04`: gold=COMPLETE pred=COMPLETE; steps gold=2 pred=0; missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_004'), ('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_901')]; extra=[]
+- `case_18`: gold=INCOMPLETE pred=INCOMPLETE; steps gold=14 pred=13; missing=[('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_6645')]; extra=[]
+- `case_20`: gold=INCOMPLETE pred=INCOMPLETE; steps gold=8 pred=7; missing=[('VERIFICATION', 'VERIFY_RECORD_PRESENT', 'security_service', 'audit_record_5569')]; extra=[]
+- `case_21`: gold=COMPLETE pred=COMPLETE; steps gold=3 pred=2; missing=[('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_5335')]; extra=[]
+- `case_23`: gold=INCOMPLETE pred=INCOMPLETE; steps gold=8 pred=7; missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_410')]; extra=[]
+- `case_25`: gold=COMPLETE pred=COMPLETE; steps gold=3 pred=2; missing=[('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_1895')]; extra=[]
+- `case_26`: gold=COMPLETE pred=COMPLETE; steps gold=6 pred=5; missing=[('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_4566')]; extra=[]
+- `case_27`: gold=COMPLETE pred=COMPLETE; steps gold=6 pred=5; missing=[('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_4574')]; extra=[]
+- `case_28`: gold=COMPLETE pred=COMPLETE; steps gold=6 pred=4; missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_5482'), ('VERIFICATION', 'VERIFY_RECORD_ANONYMIZED', 'analytics_platform', 'analytics_6077')]; extra=[]
+- `case_29`: gold=INCOMPLETE pred=INCOMPLETE; steps gold=14 pred=13; missing=[('VERIFICATION', 'VERIFY_RECORD_ABSENT', 'account_service', 'account_7012')]; extra=[]
+
+## 6. Known limitations
+
+- Some gold resources (e.g. a retained audit record or an analytics record) are not tied to the person by any participant-visible identifier; the agent does not guess these, so they appear as missing steps.
+- When several candidate resources share the same `reported_at` and none carries an identifier, the link is ambiguous and is skipped rather than guessed.
+- Legal-hold records and image-only evidence are not modelled.
+- Two evaluation cases (`case_61`, `case_63`) resolve to COMPLETE with no steps because no resource could be linked.

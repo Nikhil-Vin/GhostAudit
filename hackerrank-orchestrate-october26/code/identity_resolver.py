@@ -42,6 +42,7 @@ class IdentityResolver:
     def __init__(self, identities_csv, audit_csv):
         self.users: dict[str, Identity] = {}
         self.email_to_uids: dict[str, set[str]] = {}
+        self.hash_to_uids: dict[str, set[str]] = {}
 
         # 1. Ingest current snapshot
         with open(identities_csv, newline="", encoding="utf-8") as f:
@@ -54,6 +55,7 @@ class IdentityResolver:
                     ident.names.add(r["name"].strip())
                 if r.get("email_hash"):
                     ident.hashes.add(r["email_hash"].strip().lower())
+                    self.hash_to_uids.setdefault(r["email_hash"].strip().lower(), set()).add(uid)
 
         # 2. Ingest historical audit log (ordered by event_time)
         with open(audit_csv, newline="", encoding="utf-8") as f:
@@ -74,6 +76,7 @@ class IdentityResolver:
                     self._email(ident, v_clean)
                 elif fld == "email_hash":
                     ident.hashes.add(v_clean.lower())
+                    self.hash_to_uids.setdefault(v_clean.lower(), set()).add(uid)
                 elif fld == "phone":
                     self._phone(ident, v_clean)
                 elif fld == "name":
@@ -86,6 +89,7 @@ class IdentityResolver:
         ident.emails.add(clean)
         ident.hashes.add(sha256_email(clean))
         self.email_to_uids.setdefault(clean, set()).add(ident.user_id)
+        self.hash_to_uids.setdefault(sha256_email(clean), set()).add(ident.user_id)
 
     def _phone(self, ident: Identity, p: str | None):
         if p:
