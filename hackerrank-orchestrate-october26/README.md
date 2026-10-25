@@ -10,6 +10,13 @@ For each request, the agent must first determine whether deletion was actually r
 
 Read [`problem_statement.md`](./problem_statement.md) for the complete challenge contract.
 
+## Our Solution
+
+A deterministic Python deletion-audit pipeline lives in [`code/`](./code); see [`code/README.md`](./code/README.md) for
+architecture, decision logic and evaluation. Run `python3 code/main.py` from the repository root to regenerate
+[`output.csv`](./output.csv) (518 rows). On the 32 public samples it gets 32/32 statuses right with 100% step precision
+and 93% step recall.
+
 ---
 
 ## Quick Start

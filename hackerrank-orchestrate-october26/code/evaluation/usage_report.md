@@ -1,13 +1,16 @@
 # Token Usage & Cost Report
 
-## 1. Run Summary
-- **Pipeline Architecture**: Deterministic Multi-modal Engine & Rule Engine (Python 3)
-- **Model Providers / Names**: None (Fully deterministic rule & indexer pipeline)
-- **Total Model Calls**: 0
-- **Total Input Tokens**: 0
-- **Total Output Tokens**: 0
-- **Average Tokens per Request**: 0
-- **Total Estimated Cost**: $0.00
+Final full-dataset run that produced `output.csv` (518 cases, `python3 code/main.py`).
 
-## 2. Rationale & Efficiency
-The deterministic pipeline parses SQLite-compatible SQL snapshots, JSON bundles, and structured logs directly with zero external latency and zero token cost, guaranteeing reproducible results and instant verification.
+| Item | Value |
+|---|---|
+| Model providers / model names | none (rule-based pipeline, no LLM at run time) |
+| Model calls | 0 |
+| Input tokens | 0 |
+| Output tokens | 0 |
+| Total tokens | 0 |
+| Average tokens per request | 0 |
+| Estimated total cost | $0.00 |
+| Estimated cost per request | $0.00 |
+
+Per-model totals: not applicable (no models). The run is deterministic and reads only `dataset/`. Local tools used: SQLite, `pdftotext`. The solution itself was written with a coding assistant; its usage is outside this run and is recorded in the root `log.txt` transcript.
